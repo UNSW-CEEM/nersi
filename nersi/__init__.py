@@ -3,6 +3,9 @@ from networkx.algorithms.flow.maxflow import maximum_flow
 import matplotlib.pyplot as plt
 
 
+def average(val_1, val_2):
+    return ( float(val_1) + float(val_2) ) / 2
+
 class NodalMarket():
     def __init__(self):
         self.G = nx.DiGraph()
@@ -52,7 +55,46 @@ class NodalMarket():
         # Cleaning Up - Remove the consolidated source node.
         self.G.remove_node('Consolidated Source')
         return flow_value
+
+    def calculate_nersi(self, region, region_demand, region_available_capacity, generator_capacity):
+        """
+            Given a market model with transmission constraints and surplus capacities set, 
+            calculates the Network-Extended Residual Supply Index for a market participant (with capacity <generator_capacity>) 
+            in a given region, with a set demand (in the same units as gen capacity) and available capacity from all generators (including the generator under investigation)
+        """
+        max_flow = self.calculate_max_flow(region)
+        total_available = max_flow + region_available_capacity - generator_capacity
+        nersi = max(total_available,0) / region_demand
+        return nersi
+
+    def calculate_max_generator_capacity(self, region, region_demand, region_available_capacity):
+        """
+            Calculates the maximum generator capacity in a region, for all generators in that region to have a NERSI greater than 1. 
+        """
+        STEP_SIZE = 20
+        NERSI_THRESHOLD = 1
+        if region_demand <= STEP_SIZE:
+            return region_available_capacity
         
+        
+
+        low_bound = 0
+        high_bound = region_demand * 3
+        generator_capacity = average(high_bound, low_bound)
+
+        while(high_bound - low_bound > STEP_SIZE):
+            nersi = self.calculate_nersi( region, region_demand,region_available_capacity, generator_capacity)
+            # If greater than the NERSI threshold, generator_cap is too small (ie there is sufficient competition.)
+            # So set lower bound to the gen_cap
+            if nersi > NERSI_THRESHOLD:
+                low_bound = generator_capacity
+            else:
+                high_bound = generator_capacity
+
+            generator_capacity = average(high_bound, low_bound)
+
+        return generator_capacity
+
     def print(self):
         print("Edges:")
         for e in self.G.edges:
@@ -64,48 +106,17 @@ class NodalMarket():
         nx.draw(self.G)
         plt.show()
 
-class LMPFactory():
-    def get_australian_nem(self, date_time):
-        market = NodalMarket()
-        market.add_node('NSW')
-        market.add_node('VIC')
-        market.add_node('SA')
-        market.add_node('QLD')
-        market.add_node('TAS')
-
-        search = INTERCONNECTORRES.objects(SETTLEMENTDATE=date_time).fields(INTERCONNECTORID=1, EXPORTLIMIT=1, IMPORTLIMIT=1)
-        result = {d.INTERCONNECTORID: d for d in search}
-
-        # Now there is a bit of a mystery around what the numbers on export and import limits mean. 
-        # I think its a range, where export limit is always > import limit. 
-        # ie. the Terranora code is N-Q-MNSP1
-        # So its NSW-QLD
-        # So when positive, flowing NSW-QLD
-        # When negative, flowing QLD-NSW, 
-        # And the export and importlimits set up a range at which flow might occur. 
-
-        market.set_transmission('NSW', 'QLD', max(result['N-Q-MNSP1'].EXPORTLIMIT, 0) if 'N-Q-MNSP1' in result else 107, "Terranora NSW->QLD")
-        market.set_transmission('QLD', 'NSW', abs(min(result['N-Q-MNSP1'].IMPORTLIMIT, 0 )) if 'N-Q-MNSP1' in result else 210, "Terranora QLD->NSW")
-        market.set_transmission('NSW', 'QLD', max(result['NSW1-QLD1'].EXPORTLIMIT, 0) if 'NSW1-QLD1' in result else 600, "Queensland NSW Interconnector NSW->QLD")
-        market.set_transmission('QLD', 'NSW', abs(min(result['NSW1-QLD1'].IMPORTLIMIT, 0 )) if 'NSW1-QLD1' in result else 1078, "Queensland NSW Interconnector QLD->NSW")
-        market.set_transmission('VIC', 'NSW', max(result['VIC1-NSW1'].EXPORTLIMIT, 0) if 'VIC1-NSW1' in result else 1600, "Victoria to NSW Interconnector VIC->NSW")
-        market.set_transmission('NSW', 'VIC', abs(min(result['VIC1-NSW1'].IMPORTLIMIT, 0 )) if 'VIC1-NSW1' in result else 1350, "Victoria to NSW Interconnector NSW->VIC")
-        market.set_transmission('TAS', 'VIC', max(result['T-V-MNSP1'].EXPORTLIMIT, 0) if 'T-V-MNSP1' in result else 594, "Basslink TAS->VIC") 
-        market.set_transmission('VIC', 'TAS', abs(min(result['T-V-MNSP1'].IMPORTLIMIT, 0 )) if 'T-V-MNSP1' in result else 478, "Basslink VIC->TAS")
-        market.set_transmission('VIC', 'SA', max(result['V-SA'].EXPORTLIMIT, 0) if 'V-SA' in result else 600, "Heywood Interconnector VIC->SA") 
-        market.set_transmission('SA', 'VIC', abs(min(result['V-SA'].IMPORTLIMIT, 0 )) if 'V-SA' in result else 500, "Heywood Interconnector SA->VIC")
-        market.set_transmission('VIC', 'SA', max(result['V-S-MNSP1'].EXPORTLIMIT, 0) if 'V-S-MNSP1' in result else 220, "Murraylink VIC->SA") 
-        market.set_transmission('SA', 'VIC', abs(min(result['V-S-MNSP1'].IMPORTLIMIT, 0 )) if 'V-S-MNSP1' in result else 200, "Murraylink SA->VIC")
-
-        return market
-
 if __name__ == "__main__":
     # Interconnector capacities below taken as maximums in 'INTERCONNECTOR CAPABILITIES FOR THE NATIONAL ELECTRICITY MARKET' (2017) https://www.aemo.com.au/-/media/Files/Electricity/NEM/Security_and_Reliability/Congestion-Information/2017/Interconnector-Capabilities.pdf
     market = LMPFactory().get_australian_nem()
     
     # I think these need to be netted internally - seems to only support one edge between two nodes. 
-    flow = market.calculate_flow('SA', {'VIC': 100, 'NSW': 50, 'QLD': 600} )
-    print(flow)
+    market.set_surplus_capacity('VIC', 100)
+    market.set_surplus_capacity('NSW', 50)
+    market.set_surplus_capacity('QLD', 600)
+
+    flow = market.calculate_max_flow('SA')
+    # print(flow)
 
     # market.draw()
     market.print()
